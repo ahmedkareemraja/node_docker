@@ -20,3 +20,6 @@ Thumbs.db
 
 # Coverage
 coverage/
+
+# Claude
+.claude/
