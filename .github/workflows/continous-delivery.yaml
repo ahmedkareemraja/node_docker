@@ -1,0 +1,60 @@
+name: Continous Delivery
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  ACR_NAME: nodedocker                     # registry name, without .azurecr.io
+  RESOURCE_GROUP: learning
+  CONTAINER_NAME: node-app
+  DNS_NAME_LABEL: node-app-docker  # must be globally unique in Azure
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to Azure (service principal)
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Log in to ACR
+        run: az acr login --name "$ACR_NAME"
+
+      - name: Build and push image
+        run: |
+          IMAGE="$ACR_NAME.azurecr.io/node-app:${{ github.sha }}"
+          docker build -t "$IMAGE" .
+          docker push "$IMAGE"
+
+      - name: Get ACR credentials
+        id: acr-creds
+        run: |
+          USERNAME=$(az acr credential show -n "$ACR_NAME" --query username -o tsv)
+          PASSWORD=$(az acr credential show -n "$ACR_NAME" --query 'passwords[0].value' -o tsv)
+          echo "::add-mask::$PASSWORD"
+          echo "username=$USERNAME" >> "$GITHUB_OUTPUT"
+          echo "password=$PASSWORD" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy to Azure Container Instances
+        run: |
+          az container create \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$CONTAINER_NAME" \
+            --image "$ACR_NAME.azurecr.io/node-app:${{ github.sha }}" \
+            --registry-login-server "$ACR_NAME.azurecr.io" \
+            --registry-username "${{ steps.acr-creds.outputs.username }}" \
+            --registry-password "${{ steps.acr-creds.outputs.password }}" \
+            --os-type Linux \
+            --cpu 1 --memory 1 \
+            --ports 3000 \
+            --environment-variables PORT=3000 \
+            --dns-name-label "$DNS_NAME_LABEL"
+
+      - name: Show app URL
+        run: |
+          FQDN=$(az container show -g "$RESOURCE_GROUP" -n "$CONTAINER_NAME" --query ipAddress.fqdn -o tsv)
+          echo "Deployed to http://$FQDN:3000" >> "$GITHUB_STEP_SUMMARY"
